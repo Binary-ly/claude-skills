@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "binary-skills",
+  "description": "Claude Code skills by Binary-Ly.",
+  "owner": {
+    "name": "Binary-Ly",
+    "email": "dev@binary.ly",
+    "url": "https://binary.ly"
+  },
+  "plugins": [
+    {
+      "name": "vps-hardening",
+      "description": "Expert Ubuntu 24.04 LTS VPS hardening assistant aligned to CIS Benchmarks and NIST.",
+      "author": {
+        "name": "Soliman Benhalim"
+      },
+      "category": "security",
+      "source": "./plugins/vps-hardening"
+    }
+  ]
+}
