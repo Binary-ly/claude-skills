@@ -1,0 +1,23 @@
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Acme",
+  "url": "https://example.com",
+  "logo": "https://example.com/logo.png",
+  "sameAs": [
+    "https://www.wikidata.org/wiki/Q12345678",
+    "https://en.wikipedia.org/wiki/Acme",
+    "https://www.linkedin.com/company/acme",
+    "https://x.com/acme"
+  ],
+  "contactPoint": [
+    {
+      "@type": "ContactPoint",
+      "contactType": "Customer Service",
+      "telephone": "+1-555-123-4567",
+      "email": "help@example.com",
+      "areaServed": "US",
+      "availableLanguage": ["English", "Spanish"]
+    }
+  ]
+}

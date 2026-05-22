@@ -1,0 +1,31 @@
+{
+  "@context": "https://schema.org",
+  "@type": "ProfilePage",
+  "mainEntity": {
+    "@type": "Person",
+    "name": "Jane Doe",
+    "url": "https://example.com/authors/jane-doe",
+    "image": "https://example.com/authors/jane-doe.jpg",
+    "jobTitle": "Senior Technical SEO",
+    "worksFor": {
+      "@type": "Organization",
+      "name": "Acme",
+      "@id": "https://example.com/#org"
+    },
+    "alumniOf": {
+      "@type": "CollegeOrUniversity",
+      "name": "University of Example"
+    },
+    "sameAs": [
+      "https://www.linkedin.com/in/janedoe",
+      "https://x.com/janedoe",
+      "https://www.wikidata.org/wiki/Q...",
+      "https://orcid.org/0000-0000-0000-0000"
+    ],
+    "knowsAbout": [
+      "Technical SEO",
+      "JavaScript rendering",
+      "Core Web Vitals"
+    ]
+  }
+}

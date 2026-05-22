@@ -1,0 +1,24 @@
+# Astro / SSG — public/robots.txt
+# Ship verbatim; there is no server to render it dynamically (which is the point).
+# For headless setups, robots.txt MUST live at the apex of each host you want
+# indexed; subdomains need their own.
+
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /*?utm_
+
+# AI crawlers — opt out per crawler
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+Sitemap: https://example.com/sitemap.xml

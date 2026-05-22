@@ -12,10 +12,19 @@
       "name": "vps-hardening",
       "description": "Expert Ubuntu 24.04 LTS VPS hardening assistant aligned to CIS Benchmarks and NIST.",
       "author": {
-        "name": "Soliman Benhalim"
+        "name": "Suliman Benhalim"
       },
       "category": "security",
       "source": "./plugins/vps-hardening"
+    },
+    {
+      "name": "technical-seo-playbook",
+      "description": "Implementation-ready technical SEO playbook with code, exact thresholds, and decision trees for crawl, Core Web Vitals, structured data, JS SEO, and AI Overviews.",
+      "author": {
+        "name": "Suliman Benhalim"
+      },
+      "category": "seo",
+      "source": "./plugins/technical-seo-playbook"
     }
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "name": "technical-seo-playbook",
+  "version": "1.0.0",
+  "description": "Implementation-ready technical SEO playbook with code, exact thresholds, and decision trees for crawl architecture, Core Web Vitals, structured data, hreflang, JavaScript SEO, AI Overviews / answer-engine optimization, and penalty recovery.",
+  "author": {
+    "name": "Suliman Benhalim",
+    "email": "dev@binary.ly"
+  }
+}

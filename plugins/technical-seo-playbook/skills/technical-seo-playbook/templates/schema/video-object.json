@@ -1,0 +1,27 @@
+{
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "How to Fix INP",
+  "description": "10-minute tutorial on Interaction to Next Paint optimization.",
+  "thumbnailUrl": ["https://example.com/thumb.jpg"],
+  "uploadDate": "2026-05-10T08:00:00+00:00",
+  "duration": "PT10M",
+  "contentUrl": "https://example.com/inp.mp4",
+  "embedUrl": "https://example.com/embed/inp",
+  "hasPart": [
+    {
+      "@type": "Clip",
+      "name": "Intro",
+      "startOffset": 0,
+      "endOffset": 30,
+      "url": "https://example.com/inp#t=0"
+    },
+    {
+      "@type": "Clip",
+      "name": "Profiling",
+      "startOffset": 30,
+      "endOffset": 180,
+      "url": "https://example.com/inp#t=30"
+    }
+  ]
+}

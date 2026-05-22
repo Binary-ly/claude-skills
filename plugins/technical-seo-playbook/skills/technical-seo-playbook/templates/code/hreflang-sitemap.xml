@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  hreflang in sitemap form — recommended for large multi-locale sites.
+  Every URL must reciprocate every hreflang declaration; missing reciprocity
+  causes Google to ignore the entire hreflang group.
+  Use ISO 639-1 for language (en, es) and ISO 3166-1 alpha-2 for region (US, GB, MX).
+  Common mistake: en-uk is invalid — use en-gb.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+
+  <url>
+    <loc>https://example.com/us/page</loc>
+    <xhtml:link rel="alternate" hreflang="en-us" href="https://example.com/us/page"/>
+    <xhtml:link rel="alternate" hreflang="en-gb" href="https://example.com/uk/page"/>
+    <xhtml:link rel="alternate" hreflang="es-mx" href="https://example.com/mx/page"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://example.com/us/page"/>
+  </url>
+
+  <url>
+    <loc>https://example.com/uk/page</loc>
+    <xhtml:link rel="alternate" hreflang="en-us" href="https://example.com/us/page"/>
+    <xhtml:link rel="alternate" hreflang="en-gb" href="https://example.com/uk/page"/>
+    <xhtml:link rel="alternate" hreflang="es-mx" href="https://example.com/mx/page"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://example.com/us/page"/>
+  </url>
+
+  <url>
+    <loc>https://example.com/mx/page</loc>
+    <xhtml:link rel="alternate" hreflang="en-us" href="https://example.com/us/page"/>
+    <xhtml:link rel="alternate" hreflang="en-gb" href="https://example.com/uk/page"/>
+    <xhtml:link rel="alternate" hreflang="es-mx" href="https://example.com/mx/page"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://example.com/us/page"/>
+  </url>
+
+</urlset>

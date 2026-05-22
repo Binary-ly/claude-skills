@@ -1,0 +1,32 @@
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Technical SEO Playbook 2026",
+  "image": [
+    "https://example.com/img-16x9.jpg",
+    "https://example.com/img-4x3.jpg",
+    "https://example.com/img-1x1.jpg"
+  ],
+  "datePublished": "2026-05-18T08:00:00+00:00",
+  "dateModified": "2026-05-18T08:00:00+00:00",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "Jane Doe",
+      "jobTitle": "Technical SEO Lead",
+      "url": "https://example.com/authors/jane-doe",
+      "sameAs": [
+        "https://www.linkedin.com/in/janedoe",
+        "https://www.wikidata.org/wiki/Q123456"
+      ]
+    }
+  ],
+  "publisher": {
+    "@type": "Organization",
+    "name": "Example",
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://example.com/logo.png"
+    }
+  }
+}

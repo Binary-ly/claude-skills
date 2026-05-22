@@ -1,0 +1,35 @@
+# WordPress robots.txt — canonical pattern
+# Place at the document root: /robots.txt
+# Per RFC 9309 and Google Search Central docs.
+
+User-agent: *
+Disallow: /wp-admin/
+Allow: /wp-admin/admin-ajax.php
+Disallow: /?s=
+Disallow: /search/
+Disallow: /*?replytocom=
+Disallow: /*?attachment_id=
+Disallow: /xmlrpc.php
+
+# Faceted / parameter traps
+Disallow: /*?orderby=
+Disallow: /*?filter_*
+
+# AI crawlers — opt out per crawler.
+# Do NOT block GoogleOther unless you mean to (it's a general-purpose Google
+# research crawler; blocking it does not affect Search ranking).
+# Google-Extended controls Gemini training/grounding without affecting Googlebot indexing.
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+Sitemap: https://example.com/sitemap_index.xml

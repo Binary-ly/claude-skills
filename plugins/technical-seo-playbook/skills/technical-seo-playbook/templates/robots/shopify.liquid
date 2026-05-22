@@ -1,0 +1,25 @@
+{% comment %}
+  Shopify Online Store 2.0 — templates/robots.txt.liquid
+  Override the auto-generated /robots.txt to block faceted-nav infinite spaces.
+  The /collections/*+* patterns block the tag combinations Shopify generates
+  on filter clicks — a well-known crawl trap unique to the platform.
+{% endcomment %}
+
+{% for group in robots.default_groups %}
+  {{- group.user_agent }}
+  {%- for rule in group.rules -%}
+    {{ rule }}
+  {%- endfor -%}
+
+  {%- if group.user_agent.value == '*' -%}
+    {{ 'Disallow: /collections/*+*' }}
+    {{ 'Disallow: /collections/*%2B*' }}
+    {{ 'Disallow: /collections/*?*constraint*' }}
+    {{ 'Disallow: /collections/*sort_by*' }}
+    {{ 'Disallow: /*?variant=' }}
+  {%- endif -%}
+
+  {%- for sitemap in group.sitemaps -%}
+    {{ sitemap }}
+  {%- endfor -%}
+{% endfor %}
