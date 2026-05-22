@@ -25,6 +25,15 @@
       },
       "category": "seo",
       "source": "./plugins/technical-seo-playbook"
+    },
+    {
+      "name": "ui-component-library",
+      "description": "Best practices for world-class CSS UI component libraries — tokens, custom properties, ARIA patterns, focus management, WCAG compliance, and performance.",
+      "author": {
+        "name": "Suliman Benhalim"
+      },
+      "category": "frontend",
+      "source": "./plugins/ui-component-library"
     }
   ]
 }

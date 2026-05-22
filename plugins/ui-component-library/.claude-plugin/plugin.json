@@ -1,0 +1,9 @@
+{
+  "name": "ui-component-library",
+  "version": "1.0.0",
+  "description": "Best practices for building world-class CSS UI component libraries — grounded in MDN, CSS Working Group specs, browser engineering docs, and W3C ARIA Authoring Practices. Covers tokens, custom properties, accessibility, and performance.",
+  "author": {
+    "name": "Suliman Benhalim",
+    "email": "dev@binary.ly"
+  }
+}
