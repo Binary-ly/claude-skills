@@ -75,8 +75,13 @@ Key 2025–2026 facts you must get right every time:
 - **Wazuh** not OSSEC (OSSEC abandoned since January 2021)
 - **Coraza WAF** not ModSecurity (ModSecurity reached EOL March 31, 2024)
 - **nftables** is the default backend — `iptables` is just `iptables-nft` now
-- **`systemctl restart ssh.socket`** not `systemctl restart sshd` on Ubuntu 24.04
+- **`systemctl restart ssh.socket`** not `systemctl restart sshd` on Ubuntu 24.04 (this applies to EVERY ssh restart, including after enabling MFA/PAM)
 - **Ed25519** keys (DSA removed in OpenSSH 9.7+, RSA-SHA1 deprecated in 9.8+)
+- **`PerSourcePenalties` requires OpenSSH 9.8+** — Ubuntu 24.04 ships 9.6p1 so the directive must stay commented out. `sshd -t` only warns and exits 0 if you leave it active; new connections then fail silently. Probe with `sshd -T 2>/dev/null | grep -i persourcepenalties` before enabling.
+- **`sshd -t` is not strict.** Pair it with `sshd -T` AND a TCP loopback probe (`exec 3<>/dev/tcp/127.0.0.1/<port>; head -n 1 <&3` should return an `SSH-2.0-...` banner) before logging out of a session you just hardened.
+- **Adding `admin` to sudoers without a password is a lockout trap.** `adduser admin` (interactive, sets a Unix password) → `usermod -aG sudo` → deploy keys → confirm `sudo -v` works in a new session → THEN disable `PasswordAuthentication`. If password-less sudo is the goal, install `/etc/sudoers.d/90-admin` with `NOPASSWD` explicitly; never just rely on the default sudoers and an unset password.
+- **Host-key regeneration is destructive on existing servers.** It invalidates every `known_hosts` entry pointing at the host. Run only on a fresh install (or after coordinating a fingerprint rotation with all clients) — guard the script with a host-key age check.
+- **Probe, don't assume features from version numbers.** Ubuntu/Debian sometimes backport directives; sometimes they don't. Check with `sshd -T 2>/dev/null | grep <directive>` or `sshd -G` at install time rather than gating on a release version.
 - **NO OCSP stapling** for Let's Encrypt — dropped OCSP August 6, 2025
 - **AppArmor fix required** before rootless Docker works on 24.04
 - **Docker bypasses UFW** — must patch DOCKER-USER chain or bind to 127.0.0.1
@@ -96,6 +101,19 @@ from the reference file — do not substitute or improvise.
 ---
 
 ## Script generation workflow
+
+### Step 0 — Pre-flight safety (ALWAYS include in any script that touches SSH/sudo/firewall)
+
+The user is hardening a server they are CURRENTLY connected to. A single misstep can lock them out with no recovery path. Every script you produce must:
+
+1. **Open with a banner** that tells the user to open a second SSH session in another terminal AND verify the VPS provider's console/KVM works, BEFORE running the script. Refuse to make this implicit.
+2. **Take backups before edits** — `cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%s)` style, never overwrite blind.
+3. **Probe features, don't assume them** — gate every `sshd_config` directive that depends on an OpenSSH version with `sshd -T 2>/dev/null | grep -i <directive>` (or `sshd -G`) before writing it into the config. Especially `PerSourcePenalties` on Ubuntu 24.04 (9.6p1).
+4. **Validate strictly before reload** — `sshd -t` exits 0 on warnings. Combine `sshd -t` + `sshd -T >/dev/null` + a TCP loopback probe (read the `SSH-2.0-...` banner from `/dev/tcp/127.0.0.1/<port>`) after reload, with a clear "DO NOT LOG OUT" message if the probe fails.
+5. **Set a sudo password before disabling root SSH.** `adduser admin` (interactive) → keys → confirm `sudo -v` works in a new session → THEN flip `PermitRootLogin no` / `PasswordAuthentication no`. If password-less sudo is the goal, install a `/etc/sudoers.d/90-admin` NOPASSWD file explicitly — don't silently rely on the default sudoers with an unset password.
+6. **Gate destructive steps** — host-key regeneration breaks every existing client. Guard with a host-key age check (`stat -c %Y /etc/ssh/ssh_host_ed25519_key`) so the script refuses to run on a server that's not fresh, unless the user removes the guard intentionally.
+
+If the user asks for a "one-liner" or "quick" script that skips these, push back. The cost of an extra 60 seconds of validation is much smaller than the cost of a locked-out server at 2am.
 
 ### Step 1 — Gather setup context
 

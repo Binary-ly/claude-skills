@@ -1,6 +1,6 @@
 {
   "name": "vps-hardening",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Expert Ubuntu 24.04 LTS VPS hardening assistant aligned to CIS Benchmarks, NIST, and 2025-2026 security standards. Covers SSH, firewall, kernel, Docker, Nginx, TLS, backups, and zero-trust.",
   "author": {
     "name": "Suliman Benhalim",

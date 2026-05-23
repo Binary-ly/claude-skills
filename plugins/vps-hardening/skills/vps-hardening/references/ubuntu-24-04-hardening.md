@@ -6,7 +6,19 @@
 
 ## 1. SSH hardening: the single most important defense
 
-SSH is the primary attack surface on any VPS. Automated bots attempt brute-force logins within minutes of a server going online. Ubuntu 24.04 ships OpenSSH 9.6p1, which supports post-quantum key exchange and per-source penalties — both critical 2025 advancements.
+SSH is the primary attack surface on any VPS. Automated bots attempt brute-force logins within minutes of a server going online. Ubuntu 24.04 ships OpenSSH 9.6p1, which supports post-quantum key exchange. **`PerSourcePenalties` requires OpenSSH 9.8+ and is NOT available on stock 24.04** — `sshd -t` will warn but exit 0, so a reload appears to succeed while new connections silently fail. Probe before you enable it (see the canonical config below).
+
+### ⚠️ Pre-flight safety pattern — you ARE the session being hardened
+
+Every command in this section is being run **inside an SSH session that you are about to modify**. A single mistake can lock you out with no recovery. Before touching `sshd_config`:
+
+1. **Open a SECOND SSH session** to the server in another terminal. Leave it open. If the first one breaks, you fix it from here.
+2. **Confirm console access** (your VPS provider's web console / KVM / serial) actually works *now*. Don't discover at 2am that it doesn't.
+3. **Snapshot the config** before changing it: `sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%s)`.
+4. **Probe features, don't assume them.** Ubuntu/Debian sometimes backport directives; sometimes they don't. Use `sudo sshd -T 2>/dev/null | grep -i <directive>` to confirm a directive is actually recognized before depending on it.
+5. **Validate strictly** — `sshd -t` exits 0 on warnings. Use `sshd -T` (extended test) AND a loopback connection probe to confirm sshd actually accepts new connections before you log out.
+
+If you skip these steps and something breaks, "log in to fix it" is no longer an option. Don't skip these steps.
 
 ### Generate Ed25519 keys and disable password authentication
 
@@ -48,8 +60,14 @@ ClientAliveCountMax 2
 LoginGraceTime 30
 MaxStartups 10:30:60
 
-# === Per-Source Rate Limiting (OpenSSH 9.8+) ===
-PerSourcePenalties crash:90,authfail:5,noauth:3,grace-exceeded:20
+# === Per-Source Rate Limiting (OpenSSH 9.8+ ONLY) ===
+# Ubuntu 24.04 ships OpenSSH 9.6p1, which does NOT recognize this directive.
+# `sshd -t` warns but exits 0, so a reload looks successful while new connections fail.
+# Probe before uncommenting:
+#   sudo sshd -T 2>/dev/null | grep -i persourcepenalties
+# If that prints a value, the feature is available. Then uncomment:
+# PerSourcePenalties crash:90,authfail:5,noauth:3,grace-exceeded:20
+# Until then, rely on fail2ban or CrowdSec (section 4) for per-IP throttling.
 
 # === Forwarding & Tunneling ===
 X11Forwarding no
@@ -82,17 +100,48 @@ Banner /etc/issue.net
 Subsystem sftp /usr/lib/openssh/sftp-server -f AUTHPRIV -l INFO
 ```
 
-**Ubuntu 24.04 uses socket-based SSH activation.** Restart with:
+**Ubuntu 24.04 uses socket-based SSH activation.** Validate strictly, then restart and probe:
 
 ```bash
-sudo sshd -t  # Validate config first!
+# `sshd -t` exits 0 on WARNINGS — that's how a config with PerSourcePenalties on
+# 9.6 "passes" while breaking real connections. Pair it with `sshd -T` (extended
+# test: prints the effective config, fails harder on unknown directives) and a
+# real loopback probe.
+sudo sshd -t                                                  # basic syntax check
+sudo sshd -T >/dev/null                                       # extended check (fails harder)
+PORT=$(sudo sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')
+echo "Effective listening port: ${PORT:-22}"
+
 sudo systemctl daemon-reload
 sudo systemctl restart ssh.socket
+
+# Verify sshd actually accepts a TCP connection BEFORE you log out.
+# A healthy sshd answers with a banner like "SSH-2.0-OpenSSH_9.6p1 Ubuntu-...".
+if timeout 4 bash -c "exec 3<>/dev/tcp/127.0.0.1/${PORT:-22}; head -n 1 <&3" 2>/dev/null | grep -q "^SSH-"; then
+  echo "✓ sshd is accepting connections on port ${PORT:-22}"
+else
+  echo "✗ sshd is NOT accepting connections — DO NOT LOG OUT. Use your SECOND session to diagnose."
+fi
 ```
 
-Regenerate host keys on a fresh install to remove any weak defaults:
+**⚠️ FRESH INSTALL ONLY.** Regenerating host keys invalidates every `known_hosts`
+entry for this server worldwide. Every existing client will see a host-key
+mismatch warning on next connection and refuse to log in until the new
+fingerprint is distributed. Don't run this on a server with active users
+unless you're prepared to re-onboard every one of them.
 
 ```bash
+# Guard: refuse to regenerate keys older than 10 minutes (heuristic for
+# "this is no longer a fresh install"). Remove the guard intentionally if
+# you've coordinated a fingerprint rotation with all clients.
+KEY_AGE_SEC=$(( $(date +%s) - $(stat -c %Y /etc/ssh/ssh_host_ed25519_key 2>/dev/null || echo 0) ))
+if [ "$KEY_AGE_SEC" -gt 600 ]; then
+  echo "✗ Host key is $((KEY_AGE_SEC/86400)) days old — refusing to regenerate."
+  echo "  This server is no longer 'fresh'. If you really want to rotate, remove this guard"
+  echo "  and notify every client to update known_hosts with the new fingerprint."
+  return 1 2>/dev/null || exit 1
+fi
+
 sudo rm /etc/ssh/ssh_host_*
 sudo ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
 sudo ssh-keygen -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key -N ""
@@ -152,7 +201,7 @@ auth required pam_google_authenticator.so nullok
 KbdInteractiveAuthentication yes
 AuthenticationMethods publickey,keyboard-interactive
 
-sudo systemctl restart ssh
+sudo systemctl restart ssh.socket   # Ubuntu 24.04 uses socket activation; `restart ssh` is a no-op-then-fail
 # TEST IN A NEW TERMINAL BEFORE CLOSING YOUR SESSION
 ```
 
@@ -162,7 +211,7 @@ sudo systemctl restart ssh
 |---------|--------|--------|
 | 9.0 | `sntrup761x25519-sha512` post-quantum KEX | Future-proofs against quantum computing |
 | 9.1 | `RequiredRSASize` directive | Enforce minimum 3072-bit RSA |
-| 9.5 | `PerSourcePenalties` added | Per-IP rate limiting built into sshd |
+| 9.8 | `PerSourcePenalties` added | Per-IP rate limiting built into sshd (Ubuntu 24.04 ships 9.6p1 — NOT available without an upgrade) |
 | 9.6 | Terrapin fix (CVE-2023-48795) | Integrity protection for key exchange |
 | 9.7 | DSA disabled at compile-time | Must use Ed25519 or RSA |
 | 9.8 | regreSSHion fix (CVE-2024-6387) | **Critical RCE — ensure updated** |
@@ -1270,7 +1319,31 @@ This assumes a fresh VPS running Docker containers, Nginx reverse proxy, Node.js
 ### P0 — Critical (first 15 minutes, blocks 90%+ of attacks)
 
 1. **Update all packages:** `sudo apt update && sudo apt upgrade -y`
-2. **Create admin user, disable root SSH:** `adduser admin && usermod -aG sudo admin`; set `PermitRootLogin no`, `PasswordAuthentication no`
+2. **Create admin user with sudo password, deploy keys, THEN disable root SSH** (in that order):
+   ```bash
+   adduser admin                                                # INTERACTIVE — sets a Unix password
+   usermod -aG sudo admin
+   install -d -m 700 -o admin -g admin /home/admin/.ssh
+   cp ~/.ssh/authorized_keys /home/admin/.ssh/ && \
+     chown admin:admin /home/admin/.ssh/authorized_keys && \
+     chmod 600 /home/admin/.ssh/authorized_keys
+   # IN A NEW TERMINAL: ssh admin@host, then `sudo -v`. If sudo prompts for a
+   # password and accepts it, you're safe. Only THEN edit sshd_config:
+   #   PermitRootLogin no
+   #   PasswordAuthentication no
+   # and `sudo systemctl restart ssh.socket`.
+   ```
+   **Lockout trap:** default `sudo` requires the user's Unix password. If you create `admin`
+   non-interactively (e.g. `adduser --disabled-password`) or skip `passwd admin`, the account
+   has no password. Combined with `PasswordAuthentication no`, you get shell access via key
+   but `sudo` refuses to elevate — a soft lockout that needs console rescue.
+
+   **If you want password-less sudo intentionally** (automation, no humans logging in),
+   drop a sudoers file rather than skipping the step:
+   ```bash
+   echo 'admin ALL=(ALL) NOPASSWD: ALL' | sudo install -m 440 /dev/stdin /etc/sudoers.d/90-admin
+   sudo visudo -c                                               # validate; refuses to load broken files
+   ```
 3. **Deploy SSH keys (Ed25519)** and verify key-based login before disabling passwords
 4. **Enable UFW:** default deny incoming, allow SSH/80/443 only
 5. **Enable unattended-upgrades** for automatic security patches
