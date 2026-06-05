@@ -86,6 +86,7 @@ Key 2025–2026 facts you must get right every time:
 - **AppArmor fix required** before rootless Docker works on 24.04
 - **Docker bypasses UFW** — patch DOCKER-USER chain (Option A) OR bind to 127.0.0.1 (Option B), never both. If containers already publish only to `127.0.0.1:` with a host reverse proxy in front, the DOCKER-USER patch will silently drop public traffic to that proxy. If you do apply Option A, the `ufw route allow proto tcp from any to any port 80,443` follow-up is MANDATORY, and verification must happen from an *external* host — on-box `curl` traverses INPUT, not FORWARD, and will lie to you.
 - **Don't hardcode `storage-driver`** in `daemon.json`. Docker 29.x (Nov 2025+) defaults to `overlayfs`, not `overlay2`. Setting the wrong one against an existing `/var/lib/docker` makes the daemon refuse to start. Always run `docker info | grep "Storage Driver"` first; omit the key unless you have a specific reason to override.
+- **No MTA = silent monitoring.** Ubuntu 24.04 server ships without a mail-transfer agent. The AIDE, ClamAV, rkhunter, and chkrootkit scripts in the reference all pipe to `mail`, which fails closed if nothing is listening on the local sendmail interface — alerts are then dropped without any error surfacing through cron. Configure msmtp (recommended for single-VPS alerts) or a Postfix null client BEFORE deploying any of those tools. STARTTLS on 587, scoped credential (App Password / API key, never an account password — Gmail killed Less Secure Apps on 2024-09-30), credential file at 0600, and a real end-to-end send to the destination inbox (not just a log line saying `status=sent`) before declaring it done. See "Alert delivery infrastructure" in §6 of the reference.
 - **pam_faillock** not pam_tally2 (pam_tally2 is deprecated)
 - **`sntrup761x25519-sha512`** post-quantum KEX is production-ready on 24.04
 - **Recommended 2025 IDS stack**: CrowdSec (IPS with community intelligence) + Wazuh (SIEM/HIDS/FIM) — use both together
@@ -160,6 +161,7 @@ Generate four scripts based on the priority checklist from the reference:
   - lock root password (`passwd -l root`)
 - auditd with CIS benchmark rules (4 rule files from reference)
 - journald persistence configuration
+- **Alert delivery infrastructure (msmtp or Postfix null client)** — required by every monitoring tool below that pipes to `mail`. Pick msmtp for single-VPS alerts, Postfix null client when queue durability matters. STARTTLS:587, scoped credential at 0600, real end-to-end inbox delivery test before moving on.
 - Nginx security headers snippet
 - Nginx TLS hardening (Mozilla Intermediate profile, NO OCSP for LE, certbot with `--key-type ecdsa`)
 - Nginx rate limiting

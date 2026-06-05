@@ -664,7 +664,140 @@ sudo mkdir -p /var/log/journal
 sudo systemctl restart systemd-journald
 ```
 
+### Alert delivery infrastructure (REQUIRED before any `mail` command)
+
+**Read this section before deploying AIDE, ClamAV, rkhunter, chkrootkit, fail2ban-style alerts, or any cron job that relies on `MAILTO=`.** Ubuntu 24.04 server has **no MTA installed by default**. The scripts below pipe to `mail`, which depends on a working mail-transfer agent. If you run them without configuring one first, every alert is silently discarded by `mail`'s exit code 1 — and the cron wrapper happily moves on. You then have monitoring that *looks* configured but has been dark since day one. **Treat this as the AIDE/ClamAV/rkhunter prerequisite, not as optional polish.**
+
+**`ssmtp` is dead — don't use it.** Removed from Debian/Ubuntu repos because upstream is unmaintained and the codebase has unfixed TLS bugs. Two supported architectures remain in 2026:
+
+| | **msmtp (recommended for single-VPS alerts)** | **Postfix null client (recommended when you need queueing)** |
+|--|--|--|
+| Listener | None — pure outbound relay client | localhost-only (CIS v1.0.0 rule satisfied) |
+| Failure behavior | Drops on transient SMTP errors | Queues and retries (deferred queue) |
+| Attack surface | One static binary, no daemon | smtpd/qmgr/cleanup/pickup daemons, chrootable |
+| Use when | Alerts to one inbox, you trust your relay | You want delivery guarantees, or already run Postfix |
+
+**Both architectures MUST**, per NIST SP 800-177r1: (1) submit over STARTTLS on 587 or implicit TLS on 465, never plaintext 25 outbound; (2) authenticate with a scoped credential (App Password, OAuth2, or provider API key), never a reused account password — Gmail killed Less Secure Apps on 2024-09-30 and other providers followed; (3) use a `From:` address whose domain has aligned SPF/DKIM/DMARC records, or alerts will be silently spam-filtered at the recipient end.
+
+#### Option A — msmtp + mailutils (lightweight)
+
+```bash
+sudo apt install -y msmtp msmtp-mta mailutils ca-certificates
+# msmtp-mta provides /usr/sbin/sendmail symlink so 'mail', cron MAILTO, and AIDE-style scripts all work
+```
+
+Create `/etc/msmtprc` (NEVER world-readable — msmtp refuses to start if perms are wrong, which is by design):
+
+```
+# /etc/msmtprc — system-wide send-only relay
+defaults
+auth           on
+tls            on
+tls_starttls   on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        relay
+host           smtp.gmail.com           # or smtp.sendgrid.net, email-smtp.<region>.amazonaws.com, etc.
+port           587
+from           alerts@your-real-domain.tld
+user           alerts@your-real-domain.tld
+passwordeval   "cat /etc/msmtp.password"   # see credential hardening below
+
+account default : relay
+aliases        /etc/aliases
+```
+
+Lock the config and create the credential file:
+
+```bash
+sudo chown root:root /etc/msmtprc && sudo chmod 0600 /etc/msmtprc
+sudo install -m 0600 -o root -g root /dev/null /etc/msmtp.password
+# Paste the 16-char Gmail App Password (or provider API secret) into the file:
+sudo nano /etc/msmtp.password
+sudo install -m 0640 -o root -g adm /dev/null /var/log/msmtp.log
+```
+
+Route `root` mail to a real inbox so cron `MAILTO=root` (the default) and `mail root` both reach you:
+
+```bash
+echo "root: alerts@your-real-domain.tld" | sudo tee -a /etc/aliases
+sudo newaliases 2>/dev/null || true   # harmless if no sendmail-newaliases
+```
+
+**Stronger credential hardening (preferred for production).** The `passwordeval` directive runs any command, so the password file should ideally never exist in plaintext at rest:
+
+- **systemd credentials** (systemd 250+, available on 24.04): encrypt with `systemd-creds encrypt` and reference via `LoadCredentialEncrypted=` from the service that runs the alert script. `passwordeval "systemd-creds cat smtp_pw"`.
+- **age / gpg encrypted file**: `passwordeval "age --decrypt -i /root/.age-key /etc/msmtp.password.age"` — the key file holds the secret; the relay password is encrypted at rest. msmtp's own example uses `gpg2 --no-tty -q -d`.
+- **Cloud-native**: pull at boot from AWS SSM Parameter Store / GCP Secret Manager / HashiCorp Vault into a tmpfs file, never on disk.
+
+#### Option B — Postfix null client (queue-backed)
+
+```bash
+sudo DEBIAN_FRONTEND=noninteractive apt install -y postfix mailutils libsasl2-modules
+# When prompted, pick "Internet Site" then accept defaults — we overwrite main.cf next.
+```
+
+Overwrite `/etc/postfix/main.cf` with the canonical Postfix null-client recipe (verbatim from postfix.org STANDARD_CONFIGURATION):
+
+```ini
+# /etc/postfix/main.cf — null client (send-only, localhost listener)
+myhostname        = $(hostname -f)
+myorigin          = $mydomain
+mydestination     =
+relayhost         = [smtp.gmail.com]:587   # brackets disable MX lookup
+inet_interfaces   = loopback-only           # CIS v1.0.0: MTA local-only mode
+inet_protocols    = ipv4
+mynetworks        = 127.0.0.0/8 [::1]/128
+
+# SASL auth + STARTTLS to the relay
+smtp_sasl_auth_enable          = yes
+smtp_sasl_password_maps        = hash:/etc/postfix/sasl_passwd
+smtp_sasl_security_options     = noanonymous
+smtp_tls_security_level        = encrypt    # MANDATORY TLS — never 'may'
+smtp_tls_CAfile                = /etc/ssl/certs/ca-certificates.crt
+smtp_tls_loglevel              = 1
+
+# Rewrite local From: to the relay's authorized sender
+sender_canonical_maps          = regexp:/etc/postfix/sender_canonical
+```
+
+```bash
+echo "[smtp.gmail.com]:587 alerts@your-real-domain.tld:APP_PASSWORD" | sudo tee /etc/postfix/sasl_passwd
+sudo chmod 0600 /etc/postfix/sasl_passwd
+sudo postmap /etc/postfix/sasl_passwd          # produces sasl_passwd.db (0600)
+sudo shred -u /etc/postfix/sasl_passwd          # delete plaintext source; keep encrypted backup off-box
+echo "/.+/    alerts@your-real-domain.tld" | sudo tee /etc/postfix/sender_canonical
+echo "root: alerts@your-real-domain.tld" | sudo tee -a /etc/aliases
+sudo newaliases
+sudo systemctl restart postfix
+# Verify listener really is localhost only — must show 127.0.0.1:25, NOT 0.0.0.0:25
+sudo ss -tlnp | grep :25
+```
+
+#### End-to-end verification — DO THIS, do not skip it
+
+A successful SMTP submission does not mean the email reached the inbox. Provider reputation, SPF/DKIM/DMARC misalignment, and recipient spam folders all silently swallow mail at the destination. This is the same trap as the `DOCKER-USER` on-box `curl` test — the layer you can see succeeded; the layer that matters didn't.
+
+```bash
+# 1. Real path test — exercise the actual alert pipeline, not a synthetic one
+echo "vps-hardening MTA smoke test from $(hostname) at $(date -Iseconds)" \
+  | mail -s "MTA smoke test" root
+
+# 2. Confirm submission
+sudo tail -n 20 /var/log/msmtp.log         # Option A
+sudo journalctl -u postfix -n 30 --no-pager # Option B; expect 'status=sent'
+
+# 3. Confirm receipt — open the destination inbox in a browser. Check spam folder.
+# 4. Force a real alert. Touch a file AIDE watches, then run /usr/local/bin/aide-check.sh
+#    manually and verify the email lands. If you skip steps 3-4, your alerts ARE silently broken.
+```
+
+If the message goes to spam, fix SPF/DKIM/DMARC on the sending domain (NIST SP 800-177r1 §4–6) before declaring this done — a spam-filtered alert is a missed alert.
+
 ### File integrity monitoring with AIDE
+
+> **Prerequisite:** the script below pipes to `mail`. Configure msmtp or Postfix null client first — see "Alert delivery infrastructure" above. Without it, every AIDE alert is silently dropped.
 
 ```bash
 sudo apt install -y aide aide-common
@@ -687,6 +820,8 @@ echo "0 3 * * * root /usr/local/bin/aide-check.sh" | sudo tee /etc/cron.d/aide-c
 ---
 
 ## 7. Malware and rootkit detection
+
+> **Prerequisite for every script in this section:** the ClamAV, rkhunter, and chkrootkit alert pipelines all pipe to `mail`. Configure msmtp or Postfix null client first (see §6 "Alert delivery infrastructure"). Without it, infections and rootkit detections are silently swallowed.
 
 ### ClamAV automated scanning
 
