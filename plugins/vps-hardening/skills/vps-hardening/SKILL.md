@@ -86,6 +86,7 @@ Key 2025–2026 facts you must get right every time:
 - **AppArmor fix required** before rootless Docker works on 24.04
 - **Docker bypasses UFW** — patch DOCKER-USER chain (Option A) OR bind to 127.0.0.1 (Option B), never both. If containers already publish only to `127.0.0.1:` with a host reverse proxy in front, the DOCKER-USER patch will silently drop public traffic to that proxy. If you do apply Option A, the `ufw route allow proto tcp from any to any port 80,443` follow-up is MANDATORY, and verification must happen from an *external* host — on-box `curl` traverses INPUT, not FORWARD, and will lie to you.
 - **Don't hardcode `storage-driver`** in `daemon.json`. Docker 29.x (Nov 2025+) defaults to `overlayfs`, not `overlay2`. Setting the wrong one against an existing `/var/lib/docker` makes the daemon refuse to start. Always run `docker info | grep "Storage Driver"` first; omit the key unless you have a specific reason to override.
+- **GRUB superuser password locks out unattended reboot unless `--unrestricted` is set.** Without `--unrestricted` on the auto-generated menu entries (added via `/etc/grub.d/10_linux` `CLASS=`), every kernel update, panic, or host migration hangs the box at the bootloader. For VPS users, the threat this defends against (physical USB-keyboard access) does not exist — the provider's account login already gates console access. Default recommendation: skip GRUB password hardening on cloud VMs entirely. If applied anyway: `--unrestricted` is mandatory, the password must be typable on a US-layout console with no clipboard paste, and any `*.bak`/`*.orig` files in `/etc/grub.d/` must be `chmod -x`'d first (they are re-sourced by every `update-grub`).
 - **No MTA = silent monitoring.** Ubuntu 24.04 server ships without a mail-transfer agent. The AIDE, ClamAV, rkhunter, and chkrootkit scripts in the reference all pipe to `mail`, which fails closed if nothing is listening on the local sendmail interface — alerts are then dropped without any error surfacing through cron. Configure msmtp (recommended for single-VPS alerts) or a Postfix null client BEFORE deploying any of those tools. STARTTLS on 587, scoped credential (App Password / API key, never an account password — Gmail killed Less Secure Apps on 2024-09-30), credential file at 0600, and a real end-to-end send to the destination inbox (not just a log line saying `status=sent`) before declaring it done. See "Alert delivery infrastructure" in §6 of the reference.
 - **pam_faillock** not pam_tally2 (pam_tally2 is deprecated)
 - **`sntrup761x25519-sha512`** post-quantum KEX is production-ready on 24.04
@@ -152,7 +153,7 @@ Generate four scripts based on the priority checklist from the reference:
 
 **`harden-p2.sh`** — Defense in depth (run third, first day):
 - Disable unnecessary kernel modules (`/etc/modprobe.d/hardening.conf`) — CIS Benchmark
-- GRUB boot security: hardened kernel parameters (`audit=1 init_on_alloc=1 pti=on randomize_kstack_offset=on vsyscall=none`) + GRUB password hash
+- GRUB boot security: hardened kernel parameters (`audit=1 init_on_alloc=1 pti=on randomize_kstack_offset=on vsyscall=none`). **GRUB superuser password is opt-in only** — default-skip on VPS (threat model doesn't apply, breaks unattended reboot); if requested, MUST include `--unrestricted` on `/etc/grub.d/10_linux` `CLASS=` and a console-typability check on the password.
 - User and privilege management:
   - sudo hardening (`visudo`: use_pty, logfile, log_input/output, timestamp_timeout=5, requiretty)
   - pam_faillock account lockout (`/etc/security/faillock.conf`: deny=5, unlock_time=900, even_deny_root, fail_interval=900, audit)
@@ -253,7 +254,7 @@ These cannot be automated — always warn the user explicitly:
 
 6. For Wazuh (p3): deploy the Wazuh manager separately before installing the agent.
 
-7. GRUB password (p2): run `grub-mkpasswd-pbkdf2` interactively to generate the hash — cannot be automated.
+7. GRUB password (p2): **most VPS users should skip this entirely** — the threat model (physical/USB-keyboard access to a running box) doesn't apply to cloud VMs, and getting it wrong locks out unattended reboots. If the user insists: (a) run `grub-mkpasswd-pbkdf2` interactively, (b) the `--unrestricted` flag on `/etc/grub.d/10_linux` `CLASS=` is MANDATORY or the box won't reboot unattended, (c) the password must be typable on a US-layout console with no clipboard paste (browser KVMs strip both), (d) schedule a maintenance window with the console open before rebooting, (e) `chmod -x` any `/etc/grub.d/*.bak` files first — `update-grub` sources every executable file in that directory, including stale backups. See §4 GRUB boot security in the reference.
 ```
 
 ---

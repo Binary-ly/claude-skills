@@ -503,15 +503,51 @@ Add hardened kernel parameters to `/etc/default/grub`:
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash audit=1 audit_backlog_limit=8192 init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 slab_nomerge pti=on randomize_kstack_offset=on vsyscall=none"
 ```
 
-Password-protect GRUB to prevent boot parameter tampering:
+Password-protect GRUB to prevent boot parameter tampering.
+
+> ### ⚠️ STOP — read this before setting a GRUB password on a VPS
+>
+> A GRUB superuser password without `--unrestricted` blocks **unattended boot**. Every kernel update, panic recovery, host migration, or provider-side maintenance reboot will then hang at the bootloader waiting for someone to type the password at the console. On a VPS you do not physically touch, that "someone" is you, racing to the provider's browser KVM during an outage.
+>
+> 1. **Most VPS users should skip this hardening step entirely.** Your provider's account login already gates console access — adding a GRUB password protects against an attacker who has *already* compromised the hypervisor console, which is a threat model your VPS provider is responsible for, not you. The threat this defends against (physical access to a powered-on machine with a USB keyboard) does not exist for cloud VMs.
+>
+> 2. **If you still want it, you MUST add `--unrestricted`** so the password is required only to *edit* a boot entry or open the GRUB shell, not to *boot* the existing entries. Without `--unrestricted` the box will not reboot unattended — guaranteed.
+>
+> 3. **Password typability matters.** Hostinger / DigitalOcean / Vultr / Linode / OVH browser consoles force US keyboard layout at the bootloader stage with **no clipboard paste**. A 20-character random mixed-case password generated from your laptop is borderline untypeable when you actually need it at 3am. Use a 6-word diceware-style passphrase made of lowercase letters only, or 12+ digits — something you can type one-handed without looking.
+>
+> 4. **Never reboot immediately after applying this.** Schedule a maintenance window with (a) the browser console already open, (b) the password printed on paper next to you, and (c) the destination recovery procedure rehearsed. A failed boot at this stage means an outage that ends only when you reach the console or restore from snapshot.
+>
+> 5. **Clean up `/etc/grub.d/*.bak` files before running `update-grub`.** Any *executable* file in `/etc/grub.d/` is sourced by `grub-mkconfig`, including your own backups (`40_custom.bak`, `40_custom.orig`, etc.). A stale backup will re-inject an old password block on the next update-grub. After editing, run `sudo chmod -x /etc/grub.d/*.bak /etc/grub.d/*.orig 2>/dev/null` or move backups outside the directory entirely.
 
 ```bash
-grub-mkpasswd-pbkdf2  # Generate hash
-# Add to /etc/grub.d/40_custom:
-# set superusers="grubadmin"
-# password_pbkdf2 grubadmin grub.pbkdf2.sha512.10000.YOUR_HASH_HERE
+# Step 1 — generate the hash interactively (CANNOT be safely automated;
+# piping the password into stdin leaks it to the process table and shell history)
+grub-mkpasswd-pbkdf2
+# Enter password: <type your typable-at-console password twice>
+# Copy the resulting 'grub.pbkdf2.sha512.10000.<hash>' line.
+
+# Step 2 — declare the superuser in /etc/grub.d/40_custom
+sudo tee -a /etc/grub.d/40_custom >/dev/null <<'EOF'
+set superusers="grubadmin"
+password_pbkdf2 grubadmin grub.pbkdf2.sha512.10000.PASTE_HASH_HERE
+EOF
+
+# Step 3 — MANDATORY: add --unrestricted to the auto-generated menu entries
+# so unattended boot still works. Without this, unattended-upgrades + auto-reboot
+# = a server that never comes back up.
+sudo sed -i 's|^CLASS="\(.*\)"|CLASS="\1 --unrestricted"|' /etc/grub.d/10_linux
+grep '^CLASS=' /etc/grub.d/10_linux   # Verify --unrestricted is present
+
+# Step 4 — regenerate grub.cfg and verify menuentries carry --unrestricted
 sudo update-grub
+grep -E 'menuentry .*--unrestricted' /boot/grub/grub.cfg | head -3
+# If grep returns nothing, DO NOT REBOOT. Re-check step 3.
+
+# Step 5 — verify no stray backups will re-source on next update-grub
+ls -la /etc/grub.d/ | grep -E '\.(bak|orig|old)$'  # Should return empty
 ```
+
+Source: CIS Ubuntu 24.04 v1.0.0 §1.4 (Secure Boot Settings) — the `--unrestricted` allowance is the explicit CIS-sanctioned escape hatch for servers that must boot unattended.
 
 ### What Ubuntu 24.04 enables by default vs what needs manual hardening
 
