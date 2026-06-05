@@ -84,7 +84,8 @@ Key 2025–2026 facts you must get right every time:
 - **Probe, don't assume features from version numbers.** Ubuntu/Debian sometimes backport directives; sometimes they don't. Check with `sshd -T 2>/dev/null | grep <directive>` or `sshd -G` at install time rather than gating on a release version.
 - **NO OCSP stapling** for Let's Encrypt — dropped OCSP August 6, 2025
 - **AppArmor fix required** before rootless Docker works on 24.04
-- **Docker bypasses UFW** — must patch DOCKER-USER chain or bind to 127.0.0.1
+- **Docker bypasses UFW** — patch DOCKER-USER chain (Option A) OR bind to 127.0.0.1 (Option B), never both. If containers already publish only to `127.0.0.1:` with a host reverse proxy in front, the DOCKER-USER patch will silently drop public traffic to that proxy. If you do apply Option A, the `ufw route allow proto tcp from any to any port 80,443` follow-up is MANDATORY, and verification must happen from an *external* host — on-box `curl` traverses INPUT, not FORWARD, and will lie to you.
+- **Don't hardcode `storage-driver`** in `daemon.json`. Docker 29.x (Nov 2025+) defaults to `overlayfs`, not `overlay2`. Setting the wrong one against an existing `/var/lib/docker` makes the daemon refuse to start. Always run `docker info | grep "Storage Driver"` first; omit the key unless you have a specific reason to override.
 - **pam_faillock** not pam_tally2 (pam_tally2 is deprecated)
 - **`sntrup761x25519-sha512`** post-quantum KEX is production-ready on 24.04
 - **Recommended 2025 IDS stack**: CrowdSec (IPS with community intelligence) + Wazuh (SIEM/HIDS/FIM) — use both together

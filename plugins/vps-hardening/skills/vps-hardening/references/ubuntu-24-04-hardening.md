@@ -241,6 +241,8 @@ sudo ufw status verbose
 
 Docker manipulates iptables/nftables directly, **bypassing UFW entirely**. Published ports (`-p 8080:80`) are exposed even if UFW denies them.
 
+**Pre-check before choosing a fix.** Run `docker ps --format '{{.Ports}}'` first. If every container publishes only to `127.0.0.1:` (or to `host.docker.internal` via a host-side reverse proxy like Traefik/Nginx that is itself the *only* thing bound to `0.0.0.0:80/443`), the bypass is already mitigated by Option B — **do NOT apply Option A on top of it**. The deny-by-default `DOCKER-USER` rules below will drop forwarded traffic to your reverse proxy's containers and silently break public HTTPS. Pick one strategy; don't stack them.
+
 **Fix Option A — DOCKER-USER chain patch.** Add to the end of `/etc/ufw/after.rules`:
 
 ```
@@ -263,7 +265,17 @@ COMMIT
 # END UFW AND DOCKER
 ```
 
-Then `sudo ufw reload`. To allow a specific container port: `sudo ufw route allow proto tcp from any to any port 80`.
+Then `sudo ufw reload`.
+
+**⚠️ MANDATORY follow-up — without this, ALL container traffic is dropped.** The rules above are deny-by-default for the `FORWARD` path that Docker uses. You MUST explicitly allow each public container port via `ufw route` (not plain `ufw allow`, which only affects `INPUT`):
+
+```bash
+sudo ufw route allow proto tcp from any to any port 80
+sudo ufw route allow proto tcp from any to any port 443
+# Repeat for every port you publish from a container
+```
+
+**Verify from an external host, not from the server itself.** `curl localhost` and `curl <server-ip>` *from the server* both traverse the `INPUT` chain and will succeed even when `FORWARD`/`DOCKER-USER` is blocking the public internet. Test from your laptop, a phone on cellular, or another VPS — never declare this fix done based on an on-box curl.
 
 **Fix Option B — Gateway pattern (recommended).** Bind containers to localhost only, proxy through Nginx on the host:
 
@@ -915,7 +927,6 @@ export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
   "live-restore": true,
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
-  "storage-driver": "overlay2",
   "ip": "127.0.0.1",
   "default-ulimits": {
     "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 },
@@ -925,6 +936,8 @@ export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
 ```
 
 Key settings: **`icc: false`** disables inter-container communication on the default bridge. **`userns-remap: default`** maps container root to an unprivileged host UID. **`ip: 127.0.0.1`** binds published ports to localhost only.
+
+**On `storage-driver` — do NOT hardcode it.** Earlier guides set `"storage-driver": "overlay2"` explicitly. As of Docker 29.0 (Nov 2025), the default is the new `overlayfs` driver (kernel-native, no userspace shim). Forcing `overlay2` on a daemon that already initialized its data tree under `overlayfs` (or vice versa) makes Docker refuse to start with `mismatched storage driver` and orphans every existing image and volume until you either flip the value back or wipe `/var/lib/docker`. **Always check first** with `docker info | grep "Storage Driver"` and only set this key if you have a specific reason to override the default — never as boilerplate.
 
 ### Image scanning with Trivy
 
