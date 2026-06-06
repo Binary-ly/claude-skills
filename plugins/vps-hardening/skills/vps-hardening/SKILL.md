@@ -16,6 +16,16 @@ description: >
 
 # VPS Hardening — Ubuntu 24.04 LTS
 
+## What can you do in your time budget?
+
+Set realistic posture targets up-front. The skill is designed for incremental application — you do not need to clear all four P-levels to be safe, and pretending you can in one sitting causes the mistakes documented in "Operator gotchas" below.
+
+- **2 hours → P0 + P1.** SSH hardening, UFW, CrowdSec, unattended-upgrades, sysctl network hardening, fail2ban-equivalent. Expected USG CIS Level 1 score: **~75%**. This is the "blocks 90%+ of automated attacks" tier — get here first, always.
+- **1 day → add P2.** PAM hardening, GRUB cmdline (password optional — see GRUB landmine), AIDE, ClamAV, AppArmor enforcement (skip profiles you don't have), modprobe blacklists, fstab tmpfs hardening, audit rules, sandboxed systemd services. Expected: **~85% on Docker hosts / ~94% on host-only stacks**. The Docker delta is structural — IP forwarding, nftables management, ufw-vs-Docker — not a skill gap.
+- **1 week → add P3.** Centralized logging, Wazuh agent (if you run a manager), backup automation + restore tests, USG tailoring file for architectural exemptions, full custom AppArmor profiles for your apps. Expected: **stable >90%**, durable against drift.
+
+If you're under time pressure, ship P0+P1 today and schedule P2+P3 across the next maintenance windows. Half-applied P2 is worse than no P2 — see the AIDE baseline-timing gotcha.
+
 ## Reference material
 
 All scripts, configs, and commands in this skill come from a single authoritative
@@ -393,6 +403,57 @@ For targeted single-category requests, a single focused script block is
 fine. Don't generate all 4 scripts when the user only asked about one thing.
 
 ---
+
+## Operator gotchas
+
+These are the failure modes that bit careful operators on real production VPSes. They share a pattern: a recommendation that's correct in isolation, applied without the context that makes it dangerous. Read every gotcha that applies before generating scripts in that area.
+
+### `chattr +i` scope — narrow whitelist, never broad
+
+The immutable flag is a tamper-detection helper, not a wholesale defense. Apply it only to files no legitimate tool needs to modify.
+
+✅ **DO `chattr +i` on:**
+- `/etc/ssh/sshd_config`
+- `/etc/ssh/sshd_config.d/99-hardening.conf`
+- `/boot/grub/grub.cfg`
+
+❌ **DON'T `chattr +i` on:**
+- `/etc/passwd` — breaks `adduser`, `useradd`, every package postinst that creates a service user, AND causes `chage --maxdays N <user>` to **silently exit 0 without writing anything** (chage opens `passwd` read-only as part of writing `shadow`; the read-only open fails on immutable, the write skips, the exit code lies). Password-aging policy enforcement looks successful but isn't.
+- `/etc/shadow` — breaks `passwd`, `chage`, PAM `sp_lstchg` updates on login, `usermod -p`.
+- `/etc/group`, `/etc/gshadow` — breaks `groupadd`, `gpasswd`, `usermod -aG`.
+- `/etc/sudoers`, `/etc/sudoers.d/*` — breaks `visudo`, package installs that drop sudoers files.
+
+The threat these were meant to defend (an attacker with brief root access writes a backdoor user) is better covered by `auditd -w /etc/passwd -p wa -k identity` (logs the write attempt) + AIDE alerts on those same paths (next-day notification). Detection beats brittle prevention here.
+
+### Cloud-init SSH drop-in pre-flight
+
+OpenSSH parses `/etc/ssh/sshd_config.d/*.conf` lexicographically and is **first-match-wins for most directives**. If an earlier-numbered drop-in (cloud-init or provider image default) sets `PasswordAuthentication yes`, a later `99-hardening.conf` saying `no` is silently overridden — `sshd -T` will report the *winning* value but you may not notice. Before writing the hardening drop-in, ALWAYS run:
+
+```bash
+grep -nE '^(PasswordAuthentication|PermitRootLogin|KbdInteractiveAuthentication|ChallengeResponseAuthentication)' \
+  /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf
+```
+
+Filename and content vary by provider and image. On Hostinger, DigitalOcean, OVH, and stock Ubuntu cloud images, common offenders are `50-cloud-init.conf` and `60-cloudimg-settings.conf`. Treat the grep output as authoritative — never assume the image default matches the docs.
+
+**Fix path:** if an earlier drop-in contains a conflicting directive, EITHER edit that file directly to remove the offending line, OR delete the drop-in entirely if you've confirmed cloud-init won't regenerate it on next boot. Don't try to "out-number" it with a higher-numbered file — `sshd -T` will pick whichever is *first* in the drop-in scan order for that directive.
+
+### Policy directory backup mechanism — per-directory, not universal
+
+The "don't leave `.bak` files in a policy directory" advice depends on **how that specific directory filters its contents**. The mechanism is different in each one, and a safe backup convention in `/etc/sudoers.d/` is a *bug* in `/usr/share/pam-configs/`. Use this table:
+
+| Directory | Active filter | Safe backup |
+|---|---|---|
+| `/etc/grub.d/` | executable bit | `chmod -x` OR move to `/root/` |
+| `/etc/sudoers.d/` | `[a-zA-Z0-9_-]+` (no dots) | rename to `*.bak` (inert) OR move out |
+| `/etc/cron.d/` | `[a-zA-Z0-9_-]+` (no dots) | rename to `*.bak` (inert) OR move out |
+| `/usr/share/pam-configs/` | **everything iterated** | **move out — no safe rename** |
+| `/etc/sysctl.d/`, `/usr/lib/sysctl.d/` | ends in `.conf` | rename to `*.bak` OR move out |
+| `/etc/profile.d/` | ends in `.sh` AND executable | `chmod -x` OR rename |
+| `/etc/modprobe.d/` | ends in `.conf` | rename or move out |
+| `/etc/ssh/sshd_config.d/` | ends in `.conf` | rename to `*.bak` (inert) |
+
+**The `/usr/share/pam-configs/` row is the killer.** `pam-auth-update --force` iterates every file in that directory regardless of extension. A `unix.bak-20260606` backup gets loaded as a *second* `unix` profile, producing duplicate `pam_unix.so` lines in `common-auth` — and depending on which duplicate's options win, you can break login entirely. Always move backups out of that directory, never rename in place.
 
 ## What NOT to do
 

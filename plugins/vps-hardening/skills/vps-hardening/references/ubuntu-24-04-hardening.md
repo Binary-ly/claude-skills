@@ -367,6 +367,10 @@ net.ipv4.tcp_max_syn_backlog = 2048
 net.ipv4.tcp_synack_retries = 2
 
 # === IP SPOOFING PREVENTION ===
+# Strict reverse-path filtering. CIS/USG checks for =1, not =2. Loose mode (=2)
+# is for asymmetric multi-NIC routing and is WRONG for single-NIC VPSes — do
+# not regress to =2 even if you see a distro drop-in setting it. If a later
+# drop-in lowers this, USG/CIS will fail until you fix the offending file.
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
 
@@ -459,25 +463,39 @@ fs.protected_regular = 2
 
 ### Disable unnecessary kernel modules
 
-Create `/etc/modprobe.d/hardening.conf`:
+Create `/etc/modprobe.d/hardening.conf`. **Use the dual-line pattern** — `install <mod> /bin/false` blocks `modprobe`, but `modprobe -f` and `insmod` can still bypass it. The matching `blacklist <mod>` line is what closes the bypass:
 
 ```ini
 # Uncommon filesystems (CIS Benchmark)
 install cramfs /bin/false
+blacklist cramfs
 install freevxfs /bin/false
+blacklist freevxfs
 install jffs2 /bin/false
+blacklist jffs2
 install hfs /bin/false
+blacklist hfs
 install hfsplus /bin/false
+blacklist hfsplus
 install udf /bin/false
+blacklist udf
 
 # Uncommon network protocols
 install dccp /bin/false
+blacklist dccp
 install sctp /bin/false
+blacklist sctp
 install rds /bin/false
+blacklist rds
 install tipc /bin/false
+blacklist tipc
 
-# USB storage (if not needed)
-install usb-storage /bin/false
+# USB storage — OPTIONAL. Many VPS providers' rescue/recovery flows reattach
+# the root disk over a USB-like emulated bus. Disabling this can prevent
+# recovery boot from your provider's console. Leave commented unless you
+# have confirmed your provider's recovery path does not depend on it.
+# install usb-storage /bin/false
+# blacklist usb-storage
 ```
 
 ### AppArmor 4.0 on Ubuntu 24.04
@@ -502,6 +520,8 @@ Add hardened kernel parameters to `/etc/default/grub`:
 ```bash
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash audit=1 audit_backlog_limit=8192 init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 slab_nomerge pti=on randomize_kstack_offset=on vsyscall=none"
 ```
+
+**`init_on_alloc=1` and `init_on_free=1` are one variable, not two.** KSPP guidance is to set both together. Alloc-only zeroing leaves a window where freed-then-reused pages can leak prior contents to the next allocator that picks them up. Free-only zeroing leaves the first allocation of a fresh page uninitialised. The defense only works as a pair. Never include one in the cmdline without the other.
 
 Password-protect GRUB to prevent boot parameter tampering.
 
@@ -804,8 +824,37 @@ sudo chmod 0600 /etc/postfix/sasl_passwd
 sudo postmap /etc/postfix/sasl_passwd          # produces sasl_passwd.db (0600)
 sudo shred -u /etc/postfix/sasl_passwd          # delete plaintext source; keep encrypted backup off-box
 echo "/.+/    alerts@your-real-domain.tld" | sudo tee /etc/postfix/sender_canonical
+```
+
+**Now choose a recipient-rewrite strategy.** Two valid approaches — pick one, don't mix:
+
+**Option A — `recipient_canonical_maps` (simpler, standalone).** Rewrite happens before delivery decisions, so it works regardless of how `mydestination` and `myorigin` are set. Recommended for tight, scriptable null-client setups:
+
+```ini
+# Add to main.cf:
+recipient_canonical_maps = regexp:/etc/postfix/recipient_canonical
+```
+
+```bash
+sudo tee /etc/postfix/recipient_canonical >/dev/null <<'EOF'
+/^(root|postmaster|.*)@/    alerts@your-real-domain.tld
+EOF
+```
+
+**Option B — `/etc/aliases` (standard, but has a footgun).** Uses Postfix's normal local-delivery → alias-expansion machinery. Recommended if other admins or tools expect `/etc/aliases` to be authoritative. **The gotcha:** alias expansion only fires when the recipient's domain is in `mydestination`. If `myorigin` (or any envelope-recipient domain) resolves to a value NOT listed in `mydestination`, Postfix skips alias expansion entirely and tries to relay the bare address — which fails or sends to the wrong inbox. Make sure these stay aligned:
+
+```ini
+# Add to main.cf for Option B (note: these REPLACE the null-client myorigin):
+myorigin       = $myhostname
+mydestination  = $myhostname, localhost.localdomain, localhost
+```
+
+```bash
 echo "root: alerts@your-real-domain.tld" | sudo tee -a /etc/aliases
 sudo newaliases
+```
+
+```bash
 sudo systemctl restart postfix
 # Verify listener really is localhost only — must show 127.0.0.1:25, NOT 0.0.0.0:25
 sudo ss -tlnp | grep :25
@@ -835,8 +884,26 @@ If the message goes to spam, fix SPF/DKIM/DMARC on the sending domain (NIST SP 8
 
 > **Prerequisite:** the script below pipes to `mail`. Configure msmtp or Postfix null client first — see "Alert delivery infrastructure" above. Without it, every AIDE alert is silently dropped.
 
+> **Timing — run `aideinit` as the LAST step of P2.** AIDE's baseline is a snapshot. If you take it before USG, ClamAV, rkhunter, chkrootkit, CrowdSec, and any other P2 installs finish settling, every daily check from then on will show thousands of "added" entries from those tools' files. Operators then learn to ignore AIDE alerts — exactly what you wanted to avoid. Install AIDE early but `aideinit` last, after all other P2 changes are done.
+
+Add the exclusions BEFORE `aideinit`. The skill creates `/var/log/sudo-io` via the `iolog_dir` sudo recommendation, and every sudo invocation writes a fresh tree of binary recordings there — without exclusion, AIDE reports hundreds of new files per day from this skill's own configuration:
+
 ```bash
 sudo apt install -y aide aide-common
+
+# Add exclusions BEFORE the baseline. Anything written here is signal
+# the skill itself generates and would otherwise drown out real findings.
+sudo tee -a /etc/aide/aide.conf.d/99-vps-hardening-excludes >/dev/null <<'EOF'
+!/var/log/sudo-io
+!/var/log/aide
+!/var/log/msmtp.log
+!/var/log/nginx
+!/var/log/journal
+!/var/lib/clamav
+!/var/lib/rkhunter
+EOF
+
+# Run aideinit AFTER every other P2 install has settled
 sudo aideinit
 sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
 sudo cp /var/lib/aide/aide.db /root/aide.db.backup
@@ -974,6 +1041,21 @@ sudo groupadd wheel && sudo usermod -aG wheel trustedadmin
 echo "umask 027" | sudo tee /etc/profile.d/umask.sh
 ```
 
+### Idle shell timeout (TMOUT) — exact format matters
+
+USG's OVAL test for shell session timeout uses a strict regex that requires the three directives on **separate lines, in this order**, in `/etc/profile` or any `/etc/profile.d/*.sh` file. The compact `export TMOUT=900` one-liner that works at the shell will pass interactively but fail the OVAL test, leaving you with a real timeout and a failing CIS rule simultaneously — confusing to debug:
+
+```bash
+sudo tee /etc/profile.d/00-tmout.sh >/dev/null <<'EOF'
+TMOUT=900
+readonly TMOUT
+export TMOUT
+EOF
+sudo chmod 0644 /etc/profile.d/00-tmout.sh
+```
+
+Verify by re-logging in and running `echo $TMOUT` (must print 900) and `readonly -p | grep TMOUT` (must show it as readonly). Do NOT collapse to `export TMOUT=900` or `readonly TMOUT=900` — those forms fail the OVAL check.
+
 ---
 
 ## 9. File system security
@@ -991,11 +1073,15 @@ Apply immediately: `sudo mount -o remount,noexec,nosuid,nodev /tmp`
 
 ### Immutable flags on critical files
 
+**Scope matters — see "Operator gotchas / chattr +i scope" in SKILL.md.** Only lock files that no legitimate tool needs to modify in normal operation. Locking `/etc/passwd` or `/etc/shadow` breaks `chage`, `usermod`, `adduser`, PAM `sp_lstchg` updates, and any package postinst that creates a service user — with silent exit-0 failure modes (e.g. `chage --maxdays N <user>` exits 0 and writes nothing if `/etc/passwd` is immutable, because `chage` opens `passwd` read-only as part of writing to `shadow`). The attacker-writes-a-backdoor threat these were meant to defend is better covered by `auditd -w /etc/passwd -p wa -k identity` + AIDE alerts on the same paths.
+
 ```bash
-sudo chattr +i /etc/passwd /etc/shadow /etc/group /etc/gshadow
-sudo chattr +i /etc/sudoers /etc/ssh/sshd_config /boot/grub/grub.cfg
-# Remove flag for edits: sudo chattr -i /etc/passwd
+# Safe to lock — these are not modified by package management or routine ops
+sudo chattr +i /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-hardening.conf /boot/grub/grub.cfg
+# To edit: sudo chattr -i <path>, make changes, sudo chattr +i <path>
 ```
+
+Do NOT `chattr +i` on `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `/etc/sudoers`, or `/etc/sudoers.d/*`. Rely on auditd + AIDE for tamper detection on those instead.
 
 ### Critical file permissions
 
@@ -1061,6 +1147,30 @@ sudo apt install usg
 sudo usg audit cis_level1_server   # Audit
 sudo usg fix cis_level1_server     # Apply fixes
 ```
+
+#### Tailoring file: the actual workflow
+
+`usg audit --tailoring-file=...` rejects standalone XCCDF tailoring documents (`Unknown type of tailoring file`). The supported workaround is to call `oscap` directly with the same datastream USG ships:
+
+```bash
+sudo oscap xccdf eval \
+    --tailoring-file /etc/usg/$(hostname)-tailoring.xml \
+    --profile xccdf_org_tailored_cis_level1_server_$(hostname) \
+    --results /var/lib/usg/tailored-results.xml \
+    /usr/share/usg-benchmarks/ubuntu2404_CIS_1/ssg-ubuntu2404-xccdf.xml
+```
+
+**Use tailoring only for architectural exemptions, never to hide real failures.** Legitimate exemptions on a Docker host include `sysctl_net_ipv4_ip_forward` (Docker requires it), `package_ufw_removed` (we use UFW), and `service_nftables_enabled` (UFW manages nftables for us). If you find yourself tailoring out a rule because "fixing it would break the app," fix the app instead — that's a real finding, not an exemption.
+
+### Meta-rule — rotating a credential on a service that apps depend on
+
+This rule applies to every recipe in this guide that changes a credential on a service consumed by long-lived application processes — Redis `requirepass`, MySQL/MariaDB root or app-user passwords, RabbitMQ users, MQTT auth, Postgres roles, anything similar. **Order matters. Get it wrong and you get production 500s during the gap window.**
+
+1. **Update every dependent app's config file first** — `.env`, framework config (`config/database.php`, Laravel/Symfony/Rails equivalents), `docker-compose.yml` env, K8s secrets, whatever holds the credential the app reads at startup.
+2. **Invalidate every cache the app has of that credential** — `php artisan config:clear && php artisan config:cache` (Laravel caches `.env` aggressively), `systemctl reload nginx`, restart long-lived workers (Sidekiq, Celery, queue runners, PM2-managed Node processes) — anything that may have read the old credential into memory at boot.
+3. **Only then change the credential on the service itself and restart/reload it.**
+
+If you set the new credential on the service first, every dependent app uses the old credential against the new service for the rotation window — production 500s until you finish. The damage scales with the number of dependent apps, so on a multi-app box this can cascade into a full outage. The discipline is "apps know first, then service" — without exception.
 
 ---
 
@@ -1404,6 +1514,8 @@ sudo systemd-analyze security | sort -k 2 -n  # Most services score 8-9/10 UNSAF
 
 Nginx hardening drop-in (`/etc/systemd/system/nginx.service.d/hardening.conf`):
 
+> **LuaJIT exception — read before applying `MemoryDenyWriteExecute=yes`.** If this nginx instance loads any LuaJIT-based module — CrowdSec Nginx bouncer (recommended elsewhere in this skill), `lua-nginx-module`, OpenResty, or `mod_perl` with JIT — **OMIT the `MemoryDenyWriteExecute=yes` line below**. LuaJIT's runtime code generation requires writable+executable memory pages, and the directive will make nginx fail to start with `PANIC: unprotected error in call to Lua API (runtime code generation failed, restricted kernel?)`. PHP-FPM (no JIT) is unaffected — keep it there. Rule of thumb: if your nginx talks Lua, drop the line; otherwise keep it.
+
 ```ini
 [Service]
 ProtectSystem=strict
@@ -1420,7 +1532,7 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 SystemCallFilter=~@debug @mount @swap @reboot
-MemoryDenyWriteExecute=yes
+MemoryDenyWriteExecute=yes    # OMIT this line if LuaJIT modules are loaded — see note above
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ```
