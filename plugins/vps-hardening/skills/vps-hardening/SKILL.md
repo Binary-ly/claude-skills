@@ -180,7 +180,7 @@ Generate four scripts based on the priority checklist from the reference:
 - Filesystem hardening (fstab noexec mounts, immutable flags, permissions)
 - systemd sandboxing for Nginx (and Node.js if applicable)
 - Docker Compose hardening template
-- Trivy image scanner install
+- Trivy install — **not Docker-only.** Install on every VPS regardless of stack. `trivy rootfs /` scans installed `.deb` packages AND every language lockfile (composer.lock for Laravel, package-lock.json for Node, Gemfile.lock, requirements.txt, go.mod, Cargo.lock) in one sweep. `trivy fs <path>` targets a single app directory. `trivy config` catches dangerous IaC defaults. Image scanning is only one of four modes. Weekly cron scan recommended on host-only stacks where Docker image-scan workflows don't apply.
 - AppArmor enforcement for services
 - Docker socket security: `chmod 660 /var/run/docker.sock && chown root:docker /var/run/docker.sock`,
   `getent group docker` to audit who has root-equivalent access via the socket,

@@ -1220,20 +1220,54 @@ Key settings: **`icc: false`** disables inter-container communication on the def
 
 **On `storage-driver` — do NOT hardcode it.** Earlier guides set `"storage-driver": "overlay2"` explicitly. As of Docker 29.0 (Nov 2025), the default is the new `overlayfs` driver (kernel-native, no userspace shim). Forcing `overlay2` on a daemon that already initialized its data tree under `overlayfs` (or vice versa) makes Docker refuse to start with `mismatched storage driver` and orphans every existing image and volume until you either flip the value back or wipe `/var/lib/docker`. **Always check first** with `docker info | grep "Storage Driver"` and only set this key if you have a specific reason to override the default — never as boilerplate.
 
-### Image scanning with Trivy
+### Vulnerability scanning with Trivy (NOT Docker-only — install on every VPS)
+
+Trivy is filed under §11 because the Docker workflow is its highest-profile use, but the same binary scans **OS packages, filesystem paths, and language-specific lockfiles** with no Docker daemon involved. Install it even on host-only stacks (Laravel/Symfony, Node, Python, Ruby, Go) — `composer.lock`, `package-lock.json`, `Gemfile.lock`, `requirements.txt`, `go.mod`, and `Cargo.lock` are all first-class scan targets. On a Docker-less Laravel VPS, Trivy is still the most useful CVE scanner you can install.
 
 ```bash
-# Install
+# Install (works on every VPS — no Docker required)
 wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
 echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb noble main" | sudo tee /etc/apt/sources.list.d/trivy.list
 sudo apt update && sudo apt install -y trivy
+```
 
+**Scan mode 1 — host OS packages and language lockfiles in one sweep (`trivy rootfs`).** This is the most underused Trivy mode and the one most relevant to a hardened VPS without Docker. It walks the live filesystem and reports CVEs in every installed `.deb` (apt index) AND every language lockfile it discovers (composer.lock, package-lock.json, Gemfile.lock, etc.):
+
+```bash
+# Full host scan — installed packages + every lockfile under /
+sudo trivy rootfs --scanners vuln --severity HIGH,CRITICAL /
+
+# Faster: scan a specific app directory (composer.lock for Laravel, package-lock.json for Node)
+sudo trivy fs --scanners vuln --severity HIGH,CRITICAL /var/www/your-laravel-app
+
+# Cron the host scan weekly (mail alert via the MTA you configured in §6)
+cat <<'EOF' | sudo tee /etc/cron.weekly/trivy-host-scan
+#!/bin/bash
+OUT=$(mktemp)
+/usr/bin/trivy rootfs --scanners vuln --severity HIGH,CRITICAL --quiet --no-progress / > "$OUT" 2>&1
+grep -q "Total: 0" "$OUT" || mail -s "Trivy host scan: HIGH/CRITICAL CVEs on $(hostname)" root < "$OUT"
+rm -f "$OUT"
+EOF
+sudo chmod +x /etc/cron.weekly/trivy-host-scan
+```
+
+**Scan mode 2 — misconfig scanning (`trivy config`).** Catches dangerous defaults in IaC files you ship: Dockerfiles missing `USER` directives, K8s manifests with `privileged: true`, Terraform with open security groups, Compose files mounting the docker socket. Run on any directory containing infra-as-code:
+
+```bash
+trivy config --severity HIGH,CRITICAL /path/to/your/repo
+```
+
+**Scan mode 3 — container images (Docker users only).** The CI/CD gate and SBOM workflow:
+
+```bash
 # CI/CD gate: fail on HIGH/CRITICAL
 trivy image --severity HIGH,CRITICAL --exit-code 1 myapp:v1.0
 
-# Generate SBOM
+# Generate SBOM (CycloneDX format — works for image, fs, and rootfs scans too)
 trivy image -f cyclonedx -o sbom.cdx.json myapp:v1.0
 ```
+
+**Database freshness matters.** Trivy caches its vulnerability DB locally and only refreshes on scan. On an air-gapped or low-traffic VPS, the DB can go stale silently. Run a weekly `trivy --download-db-only` or rely on the cron above (each invocation triggers a DB check). If you see no findings on a known-vulnerable package, run `trivy --reset` and re-scan before trusting the result.
 
 ### Production-hardened Docker Compose
 
