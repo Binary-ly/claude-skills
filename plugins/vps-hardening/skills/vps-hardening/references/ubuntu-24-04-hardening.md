@@ -538,6 +538,12 @@ Password-protect GRUB to prevent boot parameter tampering.
 > 4. **Never reboot immediately after applying this.** Schedule a maintenance window with (a) the browser console already open, (b) the password printed on paper next to you, and (c) the destination recovery procedure rehearsed. A failed boot at this stage means an outage that ends only when you reach the console or restore from snapshot.
 >
 > 5. **Clean up `/etc/grub.d/*.bak` files before running `update-grub`.** Any *executable* file in `/etc/grub.d/` is sourced by `grub-mkconfig`, including your own backups (`40_custom.bak`, `40_custom.orig`, etc.). A stale backup will re-inject an old password block on the next update-grub. After editing, run `sudo chmod -x /etc/grub.d/*.bak /etc/grub.d/*.orig 2>/dev/null` or move backups outside the directory entirely.
+>
+> 6. **Store the plaintext password OFF the server, before you set it.** Paper next to you and a copy in an off-server secret vault (1Password, Bitwarden, `pass` on your laptop, provider secret store — anywhere that survives the VPS being unbootable). If you lose the plaintext, recovery requires the provider's Emergency Mode / rescue-boot to clear `grub.cfg`, and even that is not enough on its own — see next point.
+>
+> 7. **The password source of truth is `/etc/grub.d/40_custom`, not `grub.cfg`.** Rescue-mode recovery that only clears `/boot/grub/grub.cfg` looks like it worked, then the next `update-grub` (which runs automatically on every kernel security update) reads `40_custom` and REGENERATES the password block into `grub.cfg`. You'll boot fine once, then get locked out again on the next kernel patch. Full removal means: rescue-boot → mount root → **delete the `set superusers=` and `password_pbkdf2` lines from `/etc/grub.d/40_custom`** → then `update-grub`. Real incident: production VPS, 2026-06-05, 30+ minutes of outage on the first recovery attempt because only `grub.cfg` was cleared.
+>
+> **See also:** the "Immutable flags" gotcha in §9 (never `chattr +i /boot/grub/grub.cfg` — kernel updates via §10 `unattended-upgrades` will fail).
 
 ```bash
 # Step 1 — generate the hash interactively (CANNOT be safely automated;
@@ -1076,12 +1082,36 @@ Apply immediately: `sudo mount -o remount,noexec,nosuid,nodev /tmp`
 **Scope matters — see "Operator gotchas / chattr +i scope" in SKILL.md.** Only lock files that no legitimate tool needs to modify in normal operation. Locking `/etc/passwd` or `/etc/shadow` breaks `chage`, `usermod`, `adduser`, PAM `sp_lstchg` updates, and any package postinst that creates a service user — with silent exit-0 failure modes (e.g. `chage --maxdays N <user>` exits 0 and writes nothing if `/etc/passwd` is immutable, because `chage` opens `passwd` read-only as part of writing to `shadow`). The attacker-writes-a-backdoor threat these were meant to defend is better covered by `auditd -w /etc/passwd -p wa -k identity` + AIDE alerts on the same paths.
 
 ```bash
-# Safe to lock — these are not modified by package management or routine ops
-sudo chattr +i /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-hardening.conf /boot/grub/grub.cfg
+# Safe to lock — these are not modified by any routine tool or package
+sudo chattr +i /etc/ssh/sshd_config.d/99-hardening.conf
 # To edit: sudo chattr -i <path>, make changes, sudo chattr +i <path>
 ```
 
 Do NOT `chattr +i` on `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/gshadow`, `/etc/sudoers`, or `/etc/sudoers.d/*`. Rely on auditd + AIDE for tamper detection on those instead.
+
+#### ⚠️ Do NOT `chattr +i /boot/grub/grub.cfg`
+
+Earlier versions of this guide included `/boot/grub/grub.cfg` in the whitelist. **That was wrong** — kernel security updates run `grub-mkconfig` via `/etc/kernel/postinst.d/zz-update-grub` on every `linux-image-*` install (monthly on 24.04 via `unattended-upgrades`). If `grub.cfg` is immutable, the postinst fails with:
+
+```
+/usr/sbin/grub-mkconfig: 325: cannot create /boot/grub/grub.cfg: Operation not permitted
+run-parts: /etc/kernel/postinst.d/zz-update-grub exited with return code 2
+dpkg: error processing package linux-image-<version> (--configure):
+```
+
+The failure leaves the new kernel package in `iF` state (installed, failed configure) and often half-removes the previous one — a broken kernel state that surfaces at the next reboot. **Real incident: production VPS, 2026-07-05, `linux-image-6.8.0-134-generic` failed exactly this way.** See the related `/boot/grub/grub.cfg` cross-references in §10 (Automatic security updates) and §4 (GRUB password).
+
+**Correct defense for `grub.cfg`:** filesystem permissions (`chmod 600 root:root`, already applied in "Critical file permissions" below) already block non-root writes, and AIDE covers detection of unauthorized change. If a real attacker has root, no `chattr +i` stops them — they'll `chattr -i` first, then edit. The flag was purely a tamper-tripwire, and AIDE is a better tripwire.
+
+**If you truly want the tripwire on `grub.cfg`** (rarely justified — see rationale above), the ONLY safe pattern is to unlock around every dpkg run via an apt hook, and re-lock after:
+
+```bash
+# /etc/apt/apt.conf.d/50-unlock-grub-cfg
+DPkg::Pre-Invoke  {"/usr/bin/chattr -i /boot/grub/grub.cfg 2>/dev/null || true";};
+DPkg::Post-Invoke {"/usr/bin/chattr +i /boot/grub/grub.cfg 2>/dev/null || true";};
+```
+
+Note that this hook technically defeats the "root can't rewrite the bootloader" logic that motivated the flag in the first place — any dpkg pre-invoke can now silently unlock it. Recommendation: don't use this hook, drop the flag on `grub.cfg` entirely, and trust the AIDE alert.
 
 ### Critical file permissions
 
@@ -1110,6 +1140,13 @@ sudo find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -printf "%m %u %g %p\
 ## 10. Automatic security updates and patch management
 
 Ubuntu 24.04 has `unattended-upgrades` enabled by default for security updates. Configure additional settings in `/etc/apt/apt.conf.d/52-custom-unattended`:
+
+> **Before you enable this**, cross-check two prerequisites from earlier sections:
+>
+> - **Do NOT have `chattr +i /boot/grub/grub.cfg` set** (see §9 "Immutable flags" gotcha). Every kernel security update runs `grub-mkconfig` via the `zz-update-grub` postinst hook and writes `grub.cfg`. An immutable flag on that file causes the dpkg configure step to fail with `Operation not permitted`, leaving the new kernel in `iF` state — a broken kernel that only surfaces at the next reboot. Verify with `lsattr /boot/grub/grub.cfg` — it must NOT show `----i---------e-------`.
+> - **If you set a GRUB superuser password (§4 GRUB boot security), you MUST have `--unrestricted` on the menu entries** OR every `Automatic-Reboot "true"` cycle hangs at the bootloader waiting for someone to type the password on the provider's browser console. Verify with `grep -E 'menuentry .*--unrestricted' /boot/grub/grub.cfg`.
+>
+> Skipping either check turns "automatic security patches" into "automatic outage" on the next `Unattended-Upgrade::Automatic-Reboot-Time` window.
 
 ```
 Unattended-Upgrade::Allowed-Origins {
